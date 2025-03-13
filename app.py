@@ -26,19 +26,19 @@ def init_db():
     conn.commit()
     conn.close()
 
-# Initialize the database
+# Initialise db
 init_db()
 
-# Global variable to store the geofence data
+# Global vari sto geofence data
 geofence_data = {
     'latitude_of_center': None,
     'longitude_of_center': None,
     'radius': None
 }
 
-# Dictionary to track employee status (inside/outside)
+# employee status (inside/outside)
 employee_status = {}
-# Global dictionary to store the latest result per employee
+# store the latest result per employee
 last_check_result = {}
 
 
@@ -85,7 +85,7 @@ def check_location():
     device_info = data.get('topic')
     timestamp = data.get('tst')
     
-    # Extract employee name from device_info (format: owntask/user/employname/employee_id)
+    # Extract employee name from device_info (owntask/user/emplynameid)
     employname = "Unknown"
     if device_info and '/' in device_info:
         parts = device_info.split('/')
@@ -118,7 +118,7 @@ def check_location():
         date = dt_object.strftime('%Y-%m-%d')
         time_str = dt_object.strftime('%H:%M:%S')
 
-    # Check if the employee is inside or outside
+    # Check if employee is inside or outside
     is_inside = "inside" in result.lower()
 
     # Query DB for an "open" record for the current date (inside_time set, outside_time still NULL)
@@ -133,13 +133,12 @@ def check_location():
     open_record = cursor.fetchone()
     conn.close()
 
-    if is_inside:
-        # Employee is inside
+    if is_inside:#inn
         if open_record:
-            # Already has an open record – do not insert a new one.
+            # open record – do not insert a new one.
             employee_status[employname] = "inside"
         else:
-            # New entry: Employee is entering; create a new record with inside_time.
+            # New entry- Employee is entering create a new record with inside_time.
             employee_status[employname] = "inside"
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
@@ -150,10 +149,9 @@ def check_location():
                 ''', (employname, device_info, date, time_str, None, "00:00:00"))
             conn.commit()
             conn.close()
-    else:
-        # Employee is outside
+    else:#outt
         if open_record:
-            # Employee was inside and now left: update the open record.
+            # Employee was inside and now left the aera update the open record.
             inside_time = open_record['inside_time']
             record_date = open_record['date']
             try:
@@ -179,10 +177,9 @@ def check_location():
             conn.close()
             employee_status[employname] = "outside"
         else:
-            # Employee is outside and no open record exists: do nothing.
+            # Employee is outside and no open record exists do nothing.
             employee_status[employname] = "outside"
 
-    # Prepare the result JSON
     result_json = {
         "status": "success",
         "message": result,
@@ -190,7 +187,7 @@ def check_location():
         "employname": employname,
         "date": date,
         "time": time_str,
-        "status_changed": True  # You can further customize this flag if needed.
+        "status_changed": True #flag
     }
     
     # Store the result by employee name in the global dictionary for live data retrieval
@@ -201,24 +198,23 @@ def check_location():
 
 @app.route('/api/get_location_data', methods=['GET'])
 def get_location_data():
-    # Get filter date from query parameters if provided
+    # Get filter date 
     filter_date = request.args.get('date')
     
     conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row  # This enables column access by name
+    conn.row_factory = sqlite3.Row  # column access by name
     cursor = conn.cursor()
     
     if filter_date:
-        # Filter by date if provided
+        # Filter by date 
         cursor.execute('SELECT * FROM employee_locations WHERE date = ?', (filter_date,))
     else:  
-        # Get all records if no date filter
+        #all records if no date filter
         cursor.execute('SELECT * FROM employee_locations')
     
     rows = cursor.fetchall()
     conn.close()
     
-    # Convert rows to list of dictionaries
     result = []
     for row in rows:
         result.append({
@@ -242,7 +238,7 @@ def delete_location_data(id):
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
-        # Check if the record exists
+        # if the record exists
         cursor.execute('SELECT id FROM employee_locations WHERE id = ?', (id,))
         record = cursor.fetchone()
         
@@ -253,7 +249,7 @@ def delete_location_data(id):
                 "message": f"Record with ID {id} not found"
             }), 404
         
-        # Delete the record
+        # Delete record
         cursor.execute('DELETE FROM employee_locations WHERE id = ?', (id,))
         conn.commit()
         conn.close()
@@ -271,13 +267,13 @@ def delete_location_data(id):
 @app.route('/api/get_employee_statuses', methods=['GET'])
 def get_employee_statuses():
     employname = request.args.get('employname')
-    date_filter = request.args.get('date')  # optional, format: YYYY-MM-DD
+    date_filter = request.args.get('date')  # format: yr/mn/dy
 
     if not employname:
         return jsonify({"error": "Employee name is required as query parameter"}), 400
 
     conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row  # Enable column access by name
+    conn.row_factory = sqlite3.Row  #column access by name
     cursor = conn.cursor()
     
     if date_filter:
@@ -313,7 +309,7 @@ def latest_location():
     employname = request.args.get('employname')
     if not employname:
         return jsonify({"error": "Employee name is required as query parameter"}), 400
-    # Retrieve the latest result for that employee
+    #particular result from name 
     result = last_check_result.get(employname)
     if result:
         return jsonify(result), 200
@@ -321,4 +317,4 @@ def latest_location():
         return jsonify({"error": f"No live data found for employee {employname}"}), 404
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)  # Change host and port as necessary
+    app.run(debug=True, host='0.0.0.0', port=5000)
