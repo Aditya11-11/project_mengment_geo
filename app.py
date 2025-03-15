@@ -1,54 +1,50 @@
 from flask import Flask, request, jsonify, render_template
 from geopy.distance import geodesic
-from datetime import datetime
-import sqlite3
+from datetime import datetime, timedelta
 import os
+from flask_sqlalchemy import SQLAlchemy
 
 app = Flask(__name__)
 
-# Database setup
-DB_PATH = 'employee_location.db'
+# Configure SQLAlchemy to use a SQLite database (adjust URI as needed)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///employee_location.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
 
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS employee_locations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        employname TEXT,
-        device_info TEXT,
-        date TEXT,
-        inside_time TEXT,
-        outside_time TEXT,
-        total_time_spent_inside_geo_fence TEXT
-    )
-    ''')
-    conn.commit()
-    conn.close()
+# Define the EmployeeLocation model
+class EmployeeLocation(db.Model):
+    __tablename__ = 'employee_locations'
+    id = db.Column(db.Integer, primary_key=True)
+    employname = db.Column(db.Text)
+    device_info = db.Column(db.Text)
+    date = db.Column(db.String(10))  # e.g., "YYYY-MM-DD"
+    inside_time = db.Column(db.String(8))  # e.g., "HH:MM:SS"
+    outside_time = db.Column(db.String(8))
+    total_time_spent_inside_geo_fence = db.Column(db.String(8))
 
-# Initialise db
-init_db()
+# Initialize the database (creates tables if not already present)
+with app.app_context():
+    db.create_all()
 
-# Global vari sto geofence data
+# Global variables for geofence data
 geofence_data = {
     'latitude_of_center': None,
     'longitude_of_center': None,
     'radius': None
 }
 
-# employee status (inside/outside)
+# Global dictionaries for employee status and latest check result
 employee_status = {}
-# store the latest result per employee
 last_check_result = {}
 
-
 def gephync(employee_latitude, employee_longitude):
-    if geofence_data['latitude_of_center'] is None or geofence_data['longitude_of_center'] is None or geofence_data['radius'] is None:
+    if (geofence_data['latitude_of_center'] is None or 
+        geofence_data['longitude_of_center'] is None or 
+        geofence_data['radius'] is None):
         return "Geofence has not been set yet."
 
     center = (geofence_data['latitude_of_center'], geofence_data['longitude_of_center'])
     employee_location = (employee_latitude, employee_longitude)
-
     distance = geodesic(center, employee_location).meters
 
     if distance <= geofence_data['radius']:
@@ -59,7 +55,6 @@ def gephync(employee_latitude, employee_longitude):
 @app.route('/api/set_geofence', methods=['POST'])
 def set_geofence():
     data = request.get_json()
-
     latitude_of_center = data.get('lat')
     longitude_of_center = data.get('lon')
     radius = data.get('radius')
@@ -79,13 +74,12 @@ def set_geofence():
 @app.route('/api/check_location', methods=['POST'])
 def check_location():
     data = request.get_json()
-
     employee_lat = data.get('lat')
     employee_lon = data.get('lon')
     device_info = data.get('topic')
     timestamp = data.get('tst')
     
-    # Extract employee name from device_info (owntask/user/emplynameid)
+    # Extract employee name from device_info (e.g., "owntask/user/emplynameid")
     employname = "Unknown"
     if device_info and '/' in device_info:
         parts = device_info.split('/')
@@ -93,17 +87,17 @@ def check_location():
             employname = parts[2]
 
     if not employee_lat or not employee_lon:
-        return jsonify({"error": "Missing latitude or longitude for employee"})
+        return jsonify({"error": "Missing latitude or longitude for employee"}), 400
 
-    # Check geofence status
+    # geofence check
     result = gephync(employee_lat, employee_lon)
 
-    # Convert timestamp to datetime
+    # Convert timestamp to datetime 
     if timestamp:
         try:
-            if len(str(int(timestamp))) > 10:  # in milliseconds
+            if len(str(int(timestamp))) > 10:  # milli
                 timestamp_s = timestamp / 1000
-            else:  # already in seconds
+            else:
                 timestamp_s = timestamp
             dt_object = datetime.fromtimestamp(timestamp_s)
             date = dt_object.strftime('%Y-%m-%d')
@@ -118,42 +112,39 @@ def check_location():
         date = dt_object.strftime('%Y-%m-%d')
         time_str = dt_object.strftime('%H:%M:%S')
 
-    # Check if employee is inside or outside
+    # Check if employee is inside based on the geofence check result
     is_inside = "inside" in result.lower()
 
-    # Query DB for an "open" record for the current date (inside_time set, outside_time still NULL)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT id, inside_time, date 
-        FROM employee_locations 
-        WHERE employname = ? AND date = ? AND inside_time IS NOT NULL AND outside_time IS NULL
-        ''', (employname, date))
-    open_record = cursor.fetchone()
-    conn.close()
+    # Query for an "open" record (inside_time set, outside_time still NULL) for this employee and date
+    open_record = EmployeeLocation.query.filter(
+        EmployeeLocation.employname == employname,
+        EmployeeLocation.date == date,
+        EmployeeLocation.inside_time != None,
+        EmployeeLocation.outside_time == None
+    ).first()
 
-    if is_inside:#inn
+    if is_inside:
         if open_record:
-            # open record – do not insert a new one.
+            # Employee already recorded as inside
             employee_status[employname] = "inside"
         else:
-            # New entry- Employee is entering create a new record with inside_time.
+            # New entrycreate a new record with inside_time
             employee_status[employname] = "inside"
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO employee_locations 
-                (employname, device_info, date, inside_time, outside_time, total_time_spent_inside_geo_fence)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ''', (employname, device_info, date, time_str, None, "00:00:00"))
-            conn.commit()
-            conn.close()
-    else:#outt
+            new_record = EmployeeLocation(
+                employname=employname,
+                device_info=device_info,
+                date=date,
+                inside_time=time_str,
+                outside_time=None,
+                total_time_spent_inside_geo_fence="00:00:00"
+            )
+            db.session.add(new_record)
+            db.session.commit()
+    else:
         if open_record:
-            # Employee was inside and now left the aera update the open record.
-            inside_time = open_record['inside_time']
-            record_date = open_record['date']
+            # Employee was inside andleft update the record
+            inside_time = open_record.inside_time
+            record_date = open_record.date
             try:
                 inside_dt = datetime.strptime(f"{record_date} {inside_time}", "%Y-%m-%d %H:%M:%S")
                 outside_dt = datetime.strptime(f"{date} {time_str}", "%Y-%m-%d %H:%M:%S")
@@ -166,18 +157,11 @@ def check_location():
                 print(f"Error calculating time difference: {e}")
                 total_time_str = "00:00:00"
             
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute('''
-                UPDATE employee_locations 
-                SET outside_time = ?, total_time_spent_inside_geo_fence = ?
-                WHERE id = ?
-                ''', (time_str, total_time_str, open_record['id']))
-            conn.commit()
-            conn.close()
+            open_record.outside_time = time_str
+            open_record.total_time_spent_inside_geo_fence = total_time_str
+            db.session.commit()
             employee_status[employname] = "outside"
         else:
-            # Employee is outside and no open record exists do nothing.
             employee_status[employname] = "outside"
 
     result_json = {
@@ -187,44 +171,33 @@ def check_location():
         "employname": employname,
         "date": date,
         "time": time_str,
-        "status_changed": True #flag
+        "status_changed": True
     }
     
-    # Store the result by employee name in the global dictionary for live data retrieval
+    # Save the latest result for retrieval
     last_check_result[employname] = result_json
 
     return jsonify(result_json), 200
 
-
 @app.route('/api/get_location_data', methods=['GET'])
 def get_location_data():
-    # Get filter date 
     filter_date = request.args.get('date')
     
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row  # column access by name
-    cursor = conn.cursor()
-    
     if filter_date:
-        # Filter by date 
-        cursor.execute('SELECT * FROM employee_locations WHERE date = ?', (filter_date,))
-    else:  
-        #all records if no date filter
-        cursor.execute('SELECT * FROM employee_locations')
-    
-    rows = cursor.fetchall()
-    conn.close()
+        records = EmployeeLocation.query.filter_by(date=filter_date).all()
+    else:
+        records = EmployeeLocation.query.all()
     
     result = []
-    for row in rows:
+    for record in records:
         result.append({
-            'id': row['id'],
-            'employname': row['employname'],
-            'device_info': row['device_info'],
-            'date': row['date'],
-            'inside_time': row['inside_time'],
-            'outside_time': row['outside_time'],
-            'total_time_spent_inside_geo_fence': row['total_time_spent_inside_geo_fence']
+            'id': record.id,
+            'employname': record.employname,
+            'device_info': record.device_info,
+            'date': record.date,
+            'inside_time': record.inside_time,
+            'outside_time': record.outside_time,
+            'total_time_spent_inside_geo_fence': record.total_time_spent_inside_geo_fence
         })
     
     return jsonify({
@@ -234,68 +207,42 @@ def get_location_data():
 
 @app.route('/api/delete_location_data/<int:id>', methods=['DELETE'])
 def delete_location_data(id):
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # if the record exists
-        cursor.execute('SELECT id FROM employee_locations WHERE id = ?', (id,))
-        record = cursor.fetchone()
-        
-        if not record:
-            conn.close()
-            return jsonify({
-                "status": "error",
-                "message": f"Record with ID {id} not found"
-            }), 404
-        
-        # Delete record
-        cursor.execute('DELETE FROM employee_locations WHERE id = ?', (id,))
-        conn.commit()
-        conn.close()
-        
-        return jsonify({
-            "status": "success",
-            "message": f"Record with ID {id} deleted successfully"
-        }), 200
-    except Exception as e:
+    record = EmployeeLocation.query.get(id)
+    if not record:
         return jsonify({
             "status": "error",
-            "message": f"Error deleting record: {str(e)}"
-        }), 500
+            "message": f"Record with ID {id} not found"
+        }), 404
+    db.session.delete(record)
+    db.session.commit()
+    return jsonify({
+        "status": "success",
+        "message": f"Record with ID {id} deleted successfully"
+    }), 200
 
 @app.route('/api/get_employee_statuses', methods=['GET'])
 def get_employee_statuses():
     employname = request.args.get('employname')
-    date_filter = request.args.get('date')  # format: yr/mn/dy
+    date_filter = request.args.get('date')  #formatYYYY-MM-DD
 
     if not employname:
         return jsonify({"error": "Employee name is required as query parameter"}), 400
 
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row  #column access by name
-    cursor = conn.cursor()
-    
     if date_filter:
-        # Retrieve records for the employee on the given date
-        cursor.execute('SELECT * FROM employee_locations WHERE employname = ? AND date = ?', (employname, date_filter))
+        records = EmployeeLocation.query.filter_by(employname=employname, date=date_filter).all()
     else:
-        # Retrieve all records for the employee
-        cursor.execute('SELECT * FROM employee_locations WHERE employname = ?', (employname,))
-        
-    rows = cursor.fetchall()
-    conn.close()
+        records = EmployeeLocation.query.filter_by(employname=employname).all()
     
     results = []
-    for row in rows:
+    for record in records:
         results.append({
-            'id': row['id'],
-            'employname': row['employname'],
-            'device_info': row['device_info'],
-            'date': row['date'],
-            'inside_time': row['inside_time'],
-            'outside_time': row['outside_time'],
-            'total_time_spent_inside_geo_fence': row['total_time_spent_inside_geo_fence']
+            'id': record.id,
+            'employname': record.employname,
+            'device_info': record.device_info,
+            'date': record.date,
+            'inside_time': record.inside_time,
+            'outside_time': record.outside_time,
+            'total_time_spent_inside_geo_fence': record.total_time_spent_inside_geo_fence
         })
     
     return jsonify({
@@ -303,13 +250,11 @@ def get_employee_statuses():
         "data": results
     }), 200
 
-
 @app.route('/api/latest_location', methods=['GET'])
 def latest_location():
     employname = request.args.get('employname')
     if not employname:
         return jsonify({"error": "Employee name is required as query parameter"}), 400
-    #particular result from name 
     result = last_check_result.get(employname)
     if result:
         return jsonify(result), 200
