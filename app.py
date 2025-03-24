@@ -15,7 +15,7 @@ db = SQLAlchemy(app)
 class EmployeeLocation(db.Model):
     __tablename__ = 'employee_locations'
     id = db.Column(db.Integer, primary_key=True)
-    employname = db.Column(db.Text)
+    employeeID = db.Column(db.Text)
     device_info = db.Column(db.Text)
     date = db.Column(db.String(10))  # e.g., "YYYY-MM-DD"
     inside_time = db.Column(db.String(8))  # e.g., "HH:MM:SS"
@@ -74,20 +74,21 @@ def set_geofence():
 @app.route('/api/check_location', methods=['POST'])
 def check_location():
     data = request.get_json()
+    # print(data)
     employee_lat = data.get('lat')
     employee_lon = data.get('lon')
     device_info = data.get('topic')
     timestamp = data.get('tst')
     
     # Extract employee name from device_info (e.g., "owntask/user/emplynameid")
-    employname = "Unknown"
+    employeeID = "Unknown"
     if device_info and '/' in device_info:
         parts = device_info.split('/')
         if len(parts) >= 3:
-            employname = parts[2]
+            employeeID = parts[2]
 
-    if not employee_lat or not employee_lon:
-        return jsonify({"error": "Missing latitude or longitude for employee"}), 400
+    # if not employee_lat or not employee_lon:
+    #     return jsonify({"error": "Missing latitude or longitude for employee"}), 400
 
     # geofence check
     result = gephync(employee_lat, employee_lon)
@@ -117,7 +118,7 @@ def check_location():
 
     # Query for an "open" record (inside_time set, outside_time still NULL) for this employee and date
     open_record = EmployeeLocation.query.filter(
-        EmployeeLocation.employname == employname,
+        EmployeeLocation.employeeID == employeeID,
         EmployeeLocation.date == date,
         EmployeeLocation.inside_time != None,
         EmployeeLocation.outside_time == None
@@ -126,12 +127,12 @@ def check_location():
     if is_inside:
         if open_record:
             # Employee already recorded as inside
-            employee_status[employname] = "inside"
+            employee_status[employeeID] = "inside"
         else:
             # New entrycreate a new record with inside_time
-            employee_status[employname] = "inside"
+            employee_status[employeeID] = "inside"
             new_record = EmployeeLocation(
-                employname=employname,
+                employeeID=employeeID,
                 device_info=device_info,
                 date=date,
                 inside_time=time_str,
@@ -160,22 +161,23 @@ def check_location():
             open_record.outside_time = time_str
             open_record.total_time_spent_inside_geo_fence = total_time_str
             db.session.commit()
-            employee_status[employname] = "outside"
+            employee_status[employeeID] = "outside"
         else:
-            employee_status[employname] = "outside"
+            employee_status[employeeID] = "outside"
 
     result_json = {
         "status": "success",
         "message": result,
         "device_info": device_info,
-        "employname": employname,
+        "employeeID": employeeID,
         "date": date,
         "time": time_str,
         "status_changed": True
     }
     
     # Save the latest result for retrieval
-    last_check_result[employname] = result_json
+    last_check_result[employeeID] = result_json
+    # print(result_json)
 
     return jsonify(result_json), 200
 
@@ -192,13 +194,14 @@ def get_location_data():
     for record in records:
         result.append({
             'id': record.id,
-            'employname': record.employname,
+            'employeeID': record.employeeID,
             'device_info': record.device_info,
             'date': record.date,
             'inside_time': record.inside_time,
             'outside_time': record.outside_time,
             'total_time_spent_inside_geo_fence': record.total_time_spent_inside_geo_fence
         })
+        # print(result)
     
     return jsonify({
         "status": "success",
@@ -222,22 +225,25 @@ def delete_location_data(id):
 
 @app.route('/api/get_employee_statuses', methods=['GET'])
 def get_employee_statuses():
-    employname = request.args.get('employname')
+    employeeID = request.args.get('employeeID')
     date_filter = request.args.get('date')  #formatYYYY-MM-DD
+    id_filter=request.args.get('id')
 
-    if not employname:
+    if not employeeID:
         return jsonify({"error": "Employee name is required as query parameter"}), 400
 
     if date_filter:
-        records = EmployeeLocation.query.filter_by(employname=employname, date=date_filter).all()
+        records = EmployeeLocation.query.filter_by(employeeID=employeeID, date=date_filter).all()
+    if id_filter:
+        records = EmployeeLocation.query.filter_by(id=id_filter).all()
     else:
-        records = EmployeeLocation.query.filter_by(employname=employname).all()
+        records = EmployeeLocation.query.filter_by(employeeID=employeeID).all()
     
     results = []
     for record in records:
         results.append({
             'id': record.id,
-            'employname': record.employname,
+            'employeeID': record.employeeID,
             'device_info': record.device_info,
             'date': record.date,
             'inside_time': record.inside_time,
@@ -252,14 +258,14 @@ def get_employee_statuses():
 
 @app.route('/api/latest_location', methods=['GET'])
 def latest_location():
-    employname = request.args.get('employname')
-    if not employname:
+    employeeID = request.args.get('employeeID')
+    if not employeeID:
         return jsonify({"error": "Employee name is required as query parameter"}), 400
-    result = last_check_result.get(employname)
+    result = last_check_result.get(employeeID)
     if result:
         return jsonify(result), 200
     else:
-        return jsonify({"error": f"No live data found for employee {employname}"}), 404
+        return jsonify({"error": f"No live data found for employee {employeeID}"}), 404
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
